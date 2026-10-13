@@ -1,0 +1,38 @@
+# Zwiebel-Wetterdienst auf GitHub Actions
+# Laedt jede Stunde die Lokalprognosen von MeteoSchweiz (Open Data, Lizenz CC BY 4.0)
+# und legt sie im Branch «daten» ab:
+#   https://raw.githubusercontent.com/<konto>/<repository>/daten/stand.json
+#   https://raw.githubusercontent.com/<konto>/<repository>/daten/<lauf>/g39.json usw.
+name: Wetterdaten
+on:
+  schedule:
+    - cron: "17 * * * *"   # jede Stunde um hh:17 UTC; GitHub startet oft einige Minuten spaeter
+  workflow_dispatch:       # von Hand starten: Actions > Wetterdaten > Run workflow
+permissions:
+  contents: write
+concurrency:
+  group: wetterdaten
+  cancel-in-progress: false
+jobs:
+  laden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Letzten Stand holen
+        run: |
+          mkdir -p "$RUNNER_TEMP/daten"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/daten/stand.json" -o "$RUNNER_TEMP/daten/stand.json" || rm -f "$RUNNER_TEMP/daten/stand.json"
+      - name: Prognosen von MeteoSchweiz laden
+        run: python3 wetterdienst.py --out "$RUNNER_TEMP/daten"
+      - name: Im Branch «daten» veroeffentlichen
+        run: |
+          cd "$RUNNER_TEMP/daten"
+          if ! ls g*.json > /dev/null 2>&1; then echo "Keine neuen Daten"; exit 0; fi
+          RUN=$(python3 -c 'import json; print(json.load(open("stand.json"))["run"])')
+          mkdir "$RUN" && mv g*.json orte.json "$RUN"/
+          printf '# Wetterdaten fuer Zwiebel\n\nQuelle: MeteoSchweiz (Open Government Data, Lizenz CC BY 4.0, https://creativecommons.org/licenses/by/4.0/).\nDie Daten wurden ausgewaehlt und umgerechnet. Lauf %s.\n' "$RUN" > README.md
+          git init -q -b daten
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "MeteoSchweiz-Lauf $RUN"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$GITHUB_REPOSITORY.git" daten
